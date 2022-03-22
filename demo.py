@@ -79,11 +79,17 @@ for i, batch in enumerate(tqdm(dataloader)):
 
     batch = recursive_to(batch, device)
     with torch.no_grad():
+
         out = model(batch)
+        simp = out['smpl_output']
         # We have access to smpl here
         # a = out['pred_smpl_params']['betas']
         # b = out['pred_vertices']
-        write_smpl(out['smpl_output'])
+        with open("posed.obj", 'w') as fp:
+            for v in simp.vertices:
+                fp.write('v %f %f %f\n' % (v[0], v[1], v[2]))
+            for f in model.smpl.faces + 1:
+                fp.write('f %d %d %d\n' % (f[0], f[1], f[2]))
 
     batch_size = batch['img'].shape[0]
 
@@ -102,12 +108,18 @@ for i, batch in enumerate(tqdm(dataloader)):
                                                 opt_task=optimize,
                                                 use_hips=False,
                                                 full_frame=args.full_frame)
+
+        simp = opt_out['smpl_output']
         # opt_output['smpl_params']['betas']
         # opt_output['model_joints'] = model_joints
         # opt_output['vertices'] = vertices
 
         # write out smpl_betas/ verts
-        write_smpl(opt_out['smpl_output'])
+        with open("posed_optimization.obj", 'w') as fp:
+            for v in simp.vertices:
+                fp.write('v %f %f %f\n' % (v[0], v[1], v[2]))
+            for f in smpl.model.faces + 1:
+                fp.write('f %d %d %d\n' % (f[0], f[1], f[2]))
 
         # Write out image
         if write_image:
@@ -121,12 +133,3 @@ for i, batch in enumerate(tqdm(dataloader)):
     # Multiview fitting
     #if args.run_multiview:
     #   opt_out = model.downstream_optimization()
-
-
-def write_smpl(path, model):
-    pathOut = name + ".obj"
-    with open(path, 'w') as fp:
-        for v in model.r:
-            fp.write('v %f %f %f\n' % (v[0], v[1], v[2]))
-        for f in model.f + 1:
-            fp.write('f %d %d %d\n' % (f[0], f[1], f[2]))
