@@ -85,7 +85,7 @@ for i, batch in enumerate(tqdm(dataloader)):
         # We have access to smpl here
         # a = out['pred_smpl_params']['betas']
         # b = out['pred_vertices']
-        with open("posed.obj", 'w') as fp:
+        with open(args.out_folder + "posed.obj", 'w') as fp:
             for v in simp.vertices:
                 fp.write('v %f %f %f\n' % (v[0], v[1], v[2]))
             for f in model.smpl.faces + 1:
@@ -115,7 +115,7 @@ for i, batch in enumerate(tqdm(dataloader)):
         # opt_output['vertices'] = vertices
 
         # write out smpl_betas/ verts
-        with open("posed_optimization.obj", 'w') as fp:
+        with open(args.out_folder + "posed_optimization.obj", 'w') as fp:
             for v in simp.vertices:
                 fp.write('v %f %f %f\n' % (v[0], v[1], v[2]))
             for f in smpl.model.faces + 1:
