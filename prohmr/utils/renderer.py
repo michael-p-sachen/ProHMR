@@ -84,6 +84,7 @@ class Renderer:
         renderer = pyrender.OffscreenRenderer(viewport_width=image.shape[1],
                                               viewport_height=image.shape[0],
                                               point_size=1.0)
+
         material = pyrender.MetallicRoughnessMaterial(
             metallicFactor=0.0,
             alphaMode='OPAQUE',

@@ -145,6 +145,8 @@ class ProHMR(pl.LightningModule):
         pred_smpl_params['body_pose'] = pred_smpl_params['body_pose'].reshape(batch_size * num_samples, -1, 3, 3)
         pred_smpl_params['betas'] = pred_smpl_params['betas'].reshape(batch_size * num_samples, -1)
         smpl_output = self.smpl(**{k: v.float() for k,v in pred_smpl_params.items()}, pose2rot=False)
+        output['smpl_output'] = smpl_output
+
         pred_keypoints_3d = smpl_output.joints
         pred_vertices = smpl_output.vertices
         output['pred_keypoints_3d'] = pred_keypoints_3d.reshape(batch_size, num_samples, -1, 3)
@@ -156,6 +158,7 @@ class ProHMR(pl.LightningModule):
                                                    focal_length=focal_length / self.cfg.MODEL.IMAGE_SIZE)
 
         output['pred_keypoints_2d'] = pred_keypoints_2d.reshape(batch_size, num_samples, -1, 2)
+
         return output
 
     def compute_loss(self, batch: Dict, output: Dict, train: bool = True) -> torch.Tensor:

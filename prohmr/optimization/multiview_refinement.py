@@ -74,6 +74,8 @@ class MultiviewRefinement(OptimizationTask):
             smpl_output = self.smpl(**smpl_params, pose2rot=False)
             model_joints = smpl_output.joints
             vertices = smpl_output.vertices
+
+        opt_output['smpl_output'] = smpl_output
         opt_output['smpl_params'] = smpl_params
         opt_output['model_joints'] = model_joints
         opt_output['vertices'] = vertices
