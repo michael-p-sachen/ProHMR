@@ -19,7 +19,7 @@ import cv2
 from tqdm import tqdm
 
 from prohmr.configs import get_config, prohmr_config, dataset_config
-from prohmr.models import ProHMR
+from prohmr.models import ProHMR, SMPL
 from prohmr.optimization import KeypointFitting, MultiviewRefinement
 from prohmr.utils import recursive_to
 from prohmr.datasets import OpenPoseDataset
@@ -27,17 +27,20 @@ from prohmr.utils.renderer import Renderer
 
 parser = argparse.ArgumentParser(description='ProHMR demo code')
 parser.add_argument('--checkpoint', type=str, default='data/checkpoint.pt', help='Path to pretrained model checkpoint')
-parser.add_argument('--model_cfg', type=str, default=None, help='Path to config file. If not set use the default (prohmr/configs/prohmr.yaml)')
+parser.add_argument('--model_cfg', type=str, default=None,
+                    help='Path to config file. If not set use the default (prohmr/configs/prohmr.yaml)')
 parser.add_argument('--img_folder', type=str, required=True, help='Folder with input images')
 parser.add_argument('--keypoint_folder', type=str, required=True, help='Folder with corresponding OpenPose detections')
 parser.add_argument('--out_folder', type=str, default='demo_out', help='Output folder to save rendered results')
 parser.add_argument('--out_format', type=str, default='jpg', choices=['jpg', 'png'], help='Output image format')
-parser.add_argument('--run_fitting', dest='run_fitting', action='store_true', default=False, help='If set, run fitting on top of regression')
-parser.add_argument('--run_multiview', dest='run_multiview', action='store_true', default=False, help='If set, run multi view fitting on top of regression')
+parser.add_argument('--run_fitting', dest='run_fitting', action='store_true', default=False,
+                    help='If set, run fitting on top of regression')
+parser.add_argument('--run_multiview', dest='run_multiview', action='store_true', default=False,
+                    help='If set, run multi view fitting on top of regression')
 parser.add_argument('--write_image', dest="write_image", default=True, help='Batch size for inference/fitting')
-parser.add_argument('--full_frame', dest='full_frame', action='store_true', default=False, help='If set, run fitting in the original image space and not in the crop.')
+parser.add_argument('--full_frame', dest='full_frame', action='store_true', default=False,
+                    help='If set, run fitting in the original image space and not in the crop.')
 parser.add_argument('--batch_size', type=int, default=1, help='Batch size for inference/fitting')
-
 
 args = parser.parse_args()
 
@@ -60,7 +63,8 @@ if args.run_multiview:
     optimize = MultiviewRefinement(model_cfg)
 
 # Create a dataset on-the-fly
-dataset = OpenPoseDataset(model_cfg, img_folder=args.img_folder, keypoint_folder=args.keypoint_folder, max_people_per_image=1)
+dataset = OpenPoseDataset(model_cfg, img_folder=args.img_folder, keypoint_folder=args.keypoint_folder,
+                          max_people_per_image=1)
 
 # Setup a dataloader with batch_size = 1 (Process images sequentially)
 dataloader = torch.utils.data.DataLoader(dataset, args.batch_size, shuffle=False)
@@ -85,11 +89,18 @@ for i, batch in enumerate(tqdm(dataloader)):
         # We have access to smpl here
         # a = out['pred_smpl_params']['betas']
         # b = out['pred_vertices']
-        with open(args.out_folder + "posed.obj", 'w') as fp:
-            for v in simp.vertices:
+        with open(args.out_folder + "/posed.obj", 'w') as fp:
+            for v in simp.vertices.detach().cpu().numpy()[0]:
                 fp.write('v %f %f %f\n' % (v[0], v[1], v[2]))
             for f in model.smpl.faces + 1:
                 fp.write('f %d %d %d\n' % (f[0], f[1], f[2]))
+
+        # Ensure Path
+        # with open(args.out_folder + "posed.obj", 'w') as fp:
+        #     for v in simp.vertices.detach().cpu().numpy()[0]:
+        #         fp.write('v %f %f %f\n' % (v[0], v[1], v[2]))
+        #     for f in model.smpl.faces + 1:
+        #         fp.write('f %d %d %d\n' % (f[0], f[1], f[2]))
 
     batch_size = batch['img'].shape[0]
 
@@ -100,7 +111,8 @@ for i, batch in enumerate(tqdm(dataloader)):
             regression_img = renderer(out['pred_vertices'][n, 0].detach().cpu().numpy(),
                                       out['pred_cam_t'][n, 0].detach().cpu().numpy(),
                                       batch['img'][n])
-            cv2.imwrite(os.path.join(args.out_folder, f'{img_fn}_regression.{args.out_format}'), 255*regression_img[:, :, ::-1])
+            cv2.imwrite(os.path.join(args.out_folder, f'{img_fn}_regression.{args.out_format}'),
+                        255 * regression_img[:, :, ::-1])
 
     if args.run_fitting or args.run_multiview:
         opt_out = model.downstream_optimization(regression_output=out,
@@ -115,11 +127,17 @@ for i, batch in enumerate(tqdm(dataloader)):
         # opt_output['vertices'] = vertices
 
         # write out smpl_betas/ verts
-        with open(args.out_folder + "posed_optimization.obj", 'w') as fp:
-            for v in simp.vertices:
+        with open(args.out_folder + "/posed_optimization.obj", 'w') as fp:
+            for v in simp.vertices.detach().cpu().numpy()[0]:
                 fp.write('v %f %f %f\n' % (v[0], v[1], v[2]))
-            for f in smpl.model.faces + 1:
+            for f in model.smpl.faces + 1:
                 fp.write('f %d %d %d\n' % (f[0], f[1], f[2]))
+
+        # with open(args.out_folder + "optimization.obj", 'w') as fp:
+        #     for v in simp.vertices.detach().cpu().numpy()[0]:
+        #         fp.write('v %f %f %f\n' % (v[0], v[1], v[2]))
+        #     for f in model.smpl.faces + 1:
+        #         fp.write('f %d %d %d\n' % (f[0], f[1], f[2]))
 
         # Write out image
         if write_image:
@@ -128,8 +146,9 @@ for i, batch in enumerate(tqdm(dataloader)):
                 fitting_img = renderer(opt_out['vertices'][n].detach().cpu().numpy(),
                                        opt_out['camera_translation'][n].detach().cpu().numpy(),
                                        batch['img'][n], imgname=batch['imgname'][n], full_frame=args.full_frame)
-                cv2.imwrite(os.path.join(args.out_folder, f'{img_fn}_fitting.{args.out_format}'), 255*fitting_img[:, :, ::-1])
+                cv2.imwrite(os.path.join(args.out_folder, f'{img_fn}_fitting.{args.out_format}'),
+                            255 * fitting_img[:, :, ::-1])
 
     # Multiview fitting
-    #if args.run_multiview:
+    # if args.run_multiview:
     #   opt_out = model.downstream_optimization()

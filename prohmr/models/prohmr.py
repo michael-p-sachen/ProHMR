@@ -40,7 +40,7 @@ class ProHMR(pl.LightningModule):
 
         # Instantiate SMPL model
         smpl_cfg = {k.lower(): v for k,v in dict(cfg.SMPL).items()}
-        self.smpl = SMPL(**smpl_cfg)                   
+        self.smpl = SMPL(**smpl_cfg)
 
         # Buffer that shows whetheer we need to initialize ActNorm layers
         self.register_buffer('initialized', torch.tensor(False))
@@ -145,6 +145,7 @@ class ProHMR(pl.LightningModule):
         pred_smpl_params['body_pose'] = pred_smpl_params['body_pose'].reshape(batch_size * num_samples, -1, 3, 3)
         pred_smpl_params['betas'] = pred_smpl_params['betas'].reshape(batch_size * num_samples, -1)
         smpl_output = self.smpl(**{k: v.float() for k,v in pred_smpl_params.items()}, pose2rot=False)
+
         output['smpl_output'] = smpl_output
 
         pred_keypoints_3d = smpl_output.joints

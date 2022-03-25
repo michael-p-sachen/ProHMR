@@ -13,6 +13,7 @@ from .openpose_dataset import OpenPoseDataset
 from .batched_image_dataset import BatchedImageDataset
 from .skeleton_dataset import SkeletonDataset
 
+
 def create_dataset(cfg: CfgNode, dataset_cfg: CfgNode, train: bool = True) -> Dataset:
     """
     Instantiate a dataset from a config file.
