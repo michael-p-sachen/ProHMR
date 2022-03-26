@@ -115,7 +115,7 @@ def main():
             betas = out['pred_smpl_params']['betas']
             pose = out['pred_smpl_params']['body_pose']
             pose = [0 for x in pose] # Set data to zeros
-            params = {orient, betas, pose}
+            params = {"global_orient":orient, "betas":betas, "body_pose":pose}
             smpl_output = self.smpl(**{k: v.float() for k,v in params}, pose2rot=False)
             vertices = smpl_output.vertices.detach().cpu().numpy()[0]
 
@@ -149,7 +149,7 @@ def main():
             betas = opt_out['smpl_params']['betas']
             pose = opt_out['smpl_params']['body_pose']
             pose = [0 for x in pose]
-            params = {orient, betas, pose}
+            params = {"global_orient":orient, "betas":betas, "body_pose":pose}
             smpl_output = self.smpl(**{k: v.float() for k, v in params}, pose2rot=False)
 
             vertices = smpl_output.vertices.detach().cpu().numpy()[0]
@@ -169,7 +169,7 @@ def main():
             betas = opt_out['smpl_params']['betas']
             pose = opt_out['smpl_params']['body_pose']
             pose = [0 for x in pose]
-            params = {orient, betas, pose}
+            params = {"global_orient":orient, "betas":betas, "body_pose":pose}
             smpl_output = self.smpl(**{k: v.float() for k, v in params}, pose2rot=False)
 
             vertices = smpl_output.vertices.detach().cpu().numpy()[0]
