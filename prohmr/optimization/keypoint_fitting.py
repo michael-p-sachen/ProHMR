@@ -1,126 +1,186 @@
+"""
+Example usage:
+python demo.py --checkpoint=path/to/checkpoint.pt --img_folder=/path/to/images --keypoint_folder=/path/to/json --out_folder=/path/to/output --run_fitting
+
+Please keep in mind that we do not recommend to use `--full_frame` when the image resolution is above 2K because of known issues with the data term of SMPLify.
+In these cases you can resize all images such that the maximum image dimension is at most 2K.
+"""
 import torch
-import torch.nn as nn
-from typing import Dict
+import argparse
+import os
+import cv2
+from tqdm import tqdm
+import smplx
+import numpy as np
 
-from .optimization_task import OptimizationTask, rel_change
-from .losses import keypoint_fitting_loss
-
-class KeypointFitting(OptimizationTask):
-
-    def __call__(self,
-                 flow_net: nn.Module,
-                 regression_output: Dict,
-                 data: Dict,
-                 full_frame: bool = True,
-                 use_hips: bool = False) -> Dict:
-        """
-        Fit SMPL to 2D keypoint data.
-        Args:
-            flow_net (nn.Module): Pretrained Conditional Normalizing Flows network.
-            regression_output (Dict): Output of ProHMR for the given input images.
-            data (Dict): Dictionary containing images and their corresponding annotations.
-            full_frame (bool): If True, perform fitting in the original image. Otherwise fit in the cropped box.
-            use_hips (bool): If True, use hip keypoints for fitting. Hips are usually problematic.
-        Returns:
-            Dict: Optimization output containing SMPL parameters, camera, vertices and model joints.
-        """
-
-        pred_cam = regression_output['pred_cam'][:, 0]
-        batch_size = pred_cam.shape[0]
-
-        # Differentiating between fitting on the cropped box or the original image coordinates
-        if full_frame:
-            # Compute initial camera translation
-            box_center = data['box_center']
-            box_size = data['box_size']
-            img_size = data['img_size']
-            camera_center = 0.5 * img_size
-            depth = 2 * self.cfg.EXTRA.FOCAL_LENGTH / (box_size.reshape(batch_size, 1) * pred_cam[:,0].reshape(batch_size, 1) + 1e-9)
-            init_cam_t = torch.zeros_like(pred_cam)
-            init_cam_t[:, :2] = pred_cam[:, 1:] + (box_center - camera_center) * depth / self.cfg.EXTRA.FOCAL_LENGTH
-            init_cam_t[:, -1] = depth.reshape(batch_size)
-            keypoints_2d = data['orig_keypoints_2d']
-        else:
-            # Translation has been already computed in the forward pass
-            init_cam_t = regression_output['pred_cam_t'][:, 0]
-            keypoints_2d = data['keypoints_2d']
-            keypoints_2d[:, :, :-1] = self.cfg.MODEL.IMAGE_SIZE * (keypoints_2d[:, :, :-1] + 0.5)
-            img_size = torch.tensor([self.cfg.MODEL.IMAGE_SIZE, self.cfg.MODEL.IMAGE_SIZE], device=pred_cam.device, dtype=pred_cam.dtype).reshape(1, 2).repeat(batch_size, 1)
-            camera_center = 0.5 * img_size
-
-        # Make camera translation a learnable parameter
-        camera_translation = init_cam_t.detach().clone()
-
-        # Get detected joints and their confidence
-        joints_2d = keypoints_2d[:, :, :2]
-        joints_conf = keypoints_2d[:, :, [-1]]
-        if not use_hips:
-            joints_conf[:, [8, 9, 12, 25+2, 25+3, 25+14]] *= 0.0
+from prohmr.configs import get_config, prohmr_config, dataset_config
+from prohmr.models import ProHMR, SMPL
+from prohmr.optimization import KeypointFitting, MultiviewRefinement
+from prohmr.utils import recursive_to
+from prohmr.datasets import OpenPoseDataset
+from prohmr.utils.renderer import Renderer
 
 
-        focal_length = self.cfg.EXTRA.FOCAL_LENGTH * torch.ones_like(camera_center)
+def write_obj(vertices, faces, path):
+    with open(path, 'w') as fp:
+        for v in vertices:
+            fp.write('v %f %f %f\n' % (v[0], v[1], v[2]))
+        for f in faces + 1:
+            fp.write('f %d %d %d\n' % (f[0], f[1], f[2]))
 
-        # Get predicted betas
-        betas = regression_output['pred_smpl_params']['betas'][:,0].detach().clone()
-        # Initialize latent to 0 (mode of the regressed distribution)
-        z = torch.zeros(batch_size, 144, requires_grad=True, device=pred_cam.device)
 
-        # Make z, betas and camera_translation optimizable
-        z.requires_grad=True
-        betas.requires_grad=True
-        camera_translation.requires_grad = True
+def scale_vertices(real_height, vertices):
+    min_y = min(vertices[:,1])
+    max_y = max(vertices[:,1])
+    pred_height = max_y - min_y
+    scaling_factor = pred_height / real_height
 
-        # Setup optimizer
-        opt_params = [z, betas, camera_translation]
-        optimizer = torch.optim.LBFGS(opt_params, lr=1.0, line_search_fn='strong_wolfe')
+    scaled_verts = []
+    for vertex in vertices:
+        scaled_verts.append(
+            [vertex[0] * scaling_factor,
+            vertex[1] * scaling_factor,
+            vertex[2] * scaling_factor])
 
-        # As explained in Section 3.6 of the paper the pose prior reduces to ||z||_2^2
-        def pose_prior():
-            return (z ** 2).sum(dim=1)
+    scaled_verts = np.array(scaled_verts)
+    return scaled_verts
 
-        # Define fitting closure
-        def closure():
-            optimizer.zero_grad()
-            smpl_params, _, _, _, _ = flow_net(z.unsqueeze(1))
-            smpl_params = {k: v.squeeze(dim=1) for k,v in smpl_params.items()}
-            # Override regression betas with the optimizable variable
-            smpl_params['betas'] = betas
-            smpl_output = self.smpl(**smpl_params, pose2rot=False)
-            model_joints = smpl_output.joints
-            loss = keypoint_fitting_loss(smpl_params, model_joints,
-                                        camera_translation, camera_center, img_size,
-                                        joints_2d, joints_conf, pose_prior,
-                                        focal_length)
-            loss.backward()
-            return loss
 
-        # Run fitting until convergence
-        prev_loss = None
-        for i in range(self.max_iters):
-            loss = optimizer.step(closure)
-            if i > 0:
-                loss_rel_change = rel_change(prev_loss, loss.item())
-                if loss_rel_change < self.ftol:
-                    break
-            if all([torch.abs(var.grad.view(-1).max()).item() < self.gtol
-                    for var in opt_params if var.grad is not None]):
-                break
-            prev_loss = loss.item()
+def main():
+    parser = argparse.ArgumentParser(description='ProHMR evaluation code')
+    parser.add_argument('--checkpoint', type=str, default='data/checkpoint.pt', help='Path to pretrained model checkpoint')
+    parser.add_argument('--model_cfg', type=str, default=None, help='Path to config file. If not set use the default (prohmr/configs/prohmr.yaml)')
+    parser.add_argument('--img_folder', type=str, required=True, help='Folder with input images')
+    parser.add_argument('--keypoint_folder', type=str, required=True, help='Folder with corresponding OpenPose detections')
+    parser.add_argument('--out_folder', type=str, default='demo_out', help='Output folder to save rendered results')
+    parser.add_argument('--out_format', type=str, default='jpg', choices=['jpg', 'png'], help='Output image format')
+    parser.add_argument('--run_fitting', dest='run_fitting', action='store_true', default=False, help='If set, run fitting on top of regression')
+    parser.add_argument('--run_multiview', dest='run_multiview', action='store_true', default=False, help='If set, run multi view fitting on top of regression')
+    parser.add_argument('--write_image', dest="write_image", default=True, help='Batch size for inference/fitting')
+    parser.add_argument('--full_frame', dest='full_frame', action='store_true', default=False, help='If set, run fitting in the original image space and not in the crop.')
+    parser.add_argument('--batch_size', type=int, default=1, help='Batch size for inference/fitting')
+    parser.add_argument('--height_in_meters', type=float, default=None, help="Height to Scale avatar")
 
-        # Get and save final parameter values
-        opt_output = {}
+    args = parser.parse_args()
+
+    # Use the GPU if available
+    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+    if args.model_cfg is None:
+        model_cfg = prohmr_config()
+    else:
+        model_cfg = get_config(args.model_cfg)
+
+    # Setup model
+    model = ProHMR.load_from_checkpoint(args.checkpoint, strict=False, cfg=model_cfg).to(device)
+    model.eval()
+
+    # Init Optimizations
+    if args.run_fitting:
+        fittingObject = KeypointFitting(model_cfg)
+    if args.run_multiview:
+        multiviewObject = MultiviewRefinement(model_cfg)
+
+    # Create a dataset on-the-fly
+    dataset = OpenPoseDataset(model_cfg, img_folder=args.img_folder, keypoint_folder=args.keypoint_folder,
+                              max_people_per_image=1)
+
+    # Setup a dataloader with batch_size = 1 (Process images sequentially)
+    dataloader = torch.utils.data.DataLoader(dataset, args.batch_size, shuffle=False)
+
+    # Setup the renderer
+    renderer = Renderer(model_cfg, faces=model.smpl.faces)
+    write_image = args.write_image
+
+    if not os.path.exists(args.out_folder):
+        os.makedirs(args.out_folder)
+
+    faces = model.smpl.faces
+
+    # Go over each image in the dataset
+    for i, batch in enumerate(tqdm(dataloader)):
+
+        batch = recursive_to(batch, device)
+
         with torch.no_grad():
-            smpl_params, _, _, _, _ = flow_net(z.unsqueeze(1))
-            smpl_params = {k: v.squeeze(dim=1) for k,v in smpl_params.items()}
-            smpl_params['betas'] = betas
-            smpl_output = self.smpl(**smpl_params, pose2rot=False)
-            model_joints = smpl_output.joints
-            vertices = smpl_output.vertices
+            out = model(batch)
 
-        opt_output['smpl_output'] = smpl_output
-        opt_output['smpl_params'] = smpl_params
-        opt_output['model_joints'] = model_joints
-        opt_output['vertices'] = vertices
-        opt_output['camera_translation'] = camera_translation.detach()
+            # Posed SMPL
+            simp = out['smpl_output']
+            write_obj(simp.vertices.detach().cpu().numpy()[0], faces, args.out_folder + "/posed.obj")
 
-        return opt_output
+            batch_size = batch['img'].shape[0]
+
+            if write_image:
+                for n in range(batch_size):
+                    img_fn, _ = os.path.splitext(os.path.split(batch['imgname'][n])[1])
+                    regression_img = renderer(out['pred_vertices'][n, 0].detach().cpu().numpy(),
+                                              out['pred_cam_t'][n, 0].detach().cpu().numpy(),
+                                              batch['img'][n])
+                    cv2.imwrite(os.path.join(args.out_folder, f'{img_fn}_regression.{args.out_format}'),
+                                255 * regression_img[:, :, ::-1])
+
+            # UnPosedSimp
+            betas = out['pred_smpl_params']['betas']
+            betas = betas.detach().cpu().numpy()[0][0]
+            simp = smplx.create('./data/smpl/SMPL_NEUTRAL.pkl', num_betas=10)
+            betas = torch.from_numpy(betas)
+            betas = betas[None, :]
+            output = simp(betas=betas, return_verts=True)
+            vertices = output.vertices.detach().cpu().numpy().squeeze()
+            if args.height_in_meters is not None:
+                vertices = scale_vertices(args.height_in_meters, vertices)
+            write_obj(vertices, faces, args.out_folder + "/unposed.obj")
+
+        if args.run_fitting:
+            opt_out = model.downstream_optimization(regression_output=out,
+                                                    batch=batch,
+                                                    opt_task=fittingObject,
+                                                    use_hips=False,
+                                                    full_frame=args.full_frame)
+
+            # Optimized Simp
+            simp = opt_out['smpl_output']
+            write_obj(simp.vertices.detach().cpu().numpy()[0], model.smpl.faces, args.out_folder + "/posed_kp.obj")
+
+            if write_image:
+                for n in range(batch_size):
+                    img_fn, _ = os.path.splitext(os.path.split(batch['imgname'][n])[1])
+                    fitting_img = renderer(opt_out['vertices'][n].detach().cpu().numpy(),
+                                           opt_out['camera_translation'][n].detach().cpu().numpy(),
+                                           batch['img'][n], imgname=batch['imgname'][n], full_frame=args.full_frame)
+                    cv2.imwrite(os.path.join(args.out_folder, f'{img_fn}_fitting.{args.out_format}'),
+                                255 * fitting_img[:, :, ::-1])
+
+            # Unposed Optimized Simp
+            betas = opt_out['smpl_params']['betas']
+            betas = betas.detach().cpu().numpy()[0]
+            simp = smplx.create('./data/smpl/SMPL_NEUTRAL.pkl', num_betas=10)
+            betas = torch.from_numpy(betas)
+            betas = betas[None, :]
+            output = simp(betas=betas, return_verts=True)
+            vertices = output.vertices.detach().cpu().numpy().squeeze()
+            if args.height_in_meters is not None:
+                vertices = scale_vertices(args.height_in_meters, vertices)
+            write_obj(vertices, model.smpl.faces, args.out_folder + "/unposed_kp.obj")
+
+        # Multiview fitting
+        if args.run_multiview:
+            opt_out = model.downstream_optimization(regression_output=out, opt_task=multiviewObject, batch=batch)
+            simp = opt_out['smpl_output']
+            write_obj(simp.vertices.detach().cpu().numpy()[0], model.smpl.faces, args.out_folder + "/posed_mv.obj")
+
+            # Optimized Simp
+            betas = opt_out['smpl_params']['betas']
+            betas = betas.detach().cpu().numpy()[0]
+            simp = smplx.create('./data/smpl/SMPL_NEUTRAL.pkl', num_betas=10)
+            betas = torch.from_numpy(betas)
+            betas = betas[None, :]
+            output = simp(betas=betas, return_verts=True)
+            vertices = output.vertices.detach().cpu().numpy().squeeze()
+            if args.height_in_meters is not None:
+                vertices = scale_vertices(args.height_in_meters, vertices)
+            write_obj(vertices, model.smpl.faces, args.out_folder + "/unposed_mv.obj")
+
+
+if __name__ == "__main__":
+    main()

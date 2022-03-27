@@ -23,7 +23,6 @@ from prohmr.utils.renderer import Renderer
 
 def write_obj(vertices, faces, path):
     with open(path, 'w') as fp:
-        print(vertices.shape)
         for v in vertices:
             fp.write('v %f %f %f\n' % (v[0], v[1], v[2]))
         for f in faces + 1:
@@ -95,18 +94,22 @@ def main():
     if not os.path.exists(args.out_folder):
         os.makedirs(args.out_folder)
 
+    faces = model.smpl.faces
+
     # Go over each image in the dataset
     for i, batch in enumerate(tqdm(dataloader)):
 
         batch = recursive_to(batch, device)
+
         with torch.no_grad():
             out = model(batch)
 
             # Posed SMPL
             simp = out['smpl_output']
-            write_obj(simp.vertices.detach().cpu().numpy()[0], model.smpl.faces, args.out_folder + "/posed.obj")
+            # write_obj(simp.vertices.detach().cpu().numpy()[0], faces, args.out_folder + "/posed.obj")
 
             batch_size = batch['img'].shape[0]
+
             if write_image:
                 for n in range(batch_size):
                     img_fn, _ = os.path.splitext(os.path.split(batch['imgname'][n])[1])
@@ -117,19 +120,16 @@ def main():
                                 255 * regression_img[:, :, ::-1])
 
             # UnPosedSimp
-            betas = out['pred_smpl_params']['betas']
-            betas = betas.detach().cpu().numpy()[0][0]
-            model = smplx.create('./data/smpl/SMPL_NEUTRAL.pkl', num_betas=10)
-            betas = torch(betas)
-            output = model(betas=betas, return_verts=True)
-            vertices = output.vertices.detach().cpu().numpy().squeeze()
-            # vertices = smpl_output.vertices.detach().cpu().numpy()[0]
-
-
-            if args.height_in_meters is not None:
-                vertices = scale_vertices(args.height_in_meters, vertices)
-
-            write_obj(vertices, model.smpl.faces, args.out_folder + "/unposed.obj")
+            # betas = out['pred_smpl_params']['betas']
+            # betas = betas.detach().cpu().numpy()[0][0]
+            # simp = smplx.create('./data/smpl/SMPL_NEUTRAL.pkl', num_betas=10)
+            # betas = torch.from_numpy(betas)
+            # betas = betas[None, :]
+            # output = simp(betas=betas, return_verts=True)
+            # vertices = output.vertices.detach().cpu().numpy().squeeze()
+            # if args.height_in_meters is not None:
+            #     vertices = scale_vertices(args.height_in_meters, vertices)
+            # write_obj(vertices, faces, args.out_folder + "/unposed.obj")
 
         if args.run_fitting:
             opt_out = model.downstream_optimization(regression_output=out,
@@ -140,7 +140,7 @@ def main():
 
             # Optimized Simp
             simp = opt_out['smpl_output']
-            write_obj(simp.vertices.detach().cpu().numpy()[0], model.smpl.faces, args.out_folder + "/posed_fit_kp.obj")
+            # write_obj(simp.vertices.detach().cpu().numpy()[0], model.smpl.faces, args.out_folder + "/posed_kp.obj")
 
             if write_image:
                 for n in range(batch_size):
@@ -153,35 +153,33 @@ def main():
 
             # Unposed Optimized Simp
             betas = opt_out['smpl_params']['betas']
-            betas = betas.detach().cpu().numpy()[0][0]
-            model = smplx.create('./data/smpl/SMPL_NEUTRAL.pkl', num_betas=10)
-            betas = torch(betas)
-            output = model(betas=betas, return_verts=True)
+            betas = betas.detach().cpu().numpy()[0]
+            simp = smplx.create('./data/smpl/SMPL_NEUTRAL.pkl', num_betas=10)
+            betas = torch.from_numpy(betas)
+            betas = betas[None, :]
+            output = simp(betas=betas, return_verts=True)
             vertices = output.vertices.detach().cpu().numpy().squeeze()
-
             if args.height_in_meters is not None:
                 vertices = scale_vertices(args.height_in_meters, vertices)
-
-            write_obj(vertices, model.smpl.faces, args.out_folder + "/unposed.obj")
+            write_obj(vertices, model.smpl.faces, args.out_folder + "/unposed_kp.obj")
 
         # Multiview fitting
         if args.run_multiview:
             opt_out = model.downstream_optimization(regression_output=out, opt_task=multiviewObject, batch=batch)
             simp = opt_out['smpl_output']
-            write_obj(simp.vertices.detach().cpu().numpy()[0], model.smpl.faces, args.out_folder + "/posed_fit_mv.obj")
+            write_obj(simp.vertices.detach().cpu().numpy()[0], model.smpl.faces, args.out_folder + "/posed_mv.obj")
 
             # Optimized Simp
             betas = opt_out['smpl_params']['betas']
-            betas = betas.detach().cpu().numpy()[0][0]
-            model = smplx.create('./data/smpl/SMPL_NEUTRAL.pkl', num_betas=10)
-            betas = torch(betas)
-            output = model(betas=betas, return_verts=True)
+            betas = betas.detach().cpu().numpy()[0]
+            simp = smplx.create('./data/smpl/SMPL_NEUTRAL.pkl', num_betas=10)
+            betas = torch.from_numpy(betas)
+            betas = betas[None, :]
+            output = simp(betas=betas, return_verts=True)
             vertices = output.vertices.detach().cpu().numpy().squeeze()
-
             if args.height_in_meters is not None:
                 vertices = scale_vertices(args.height_in_meters, vertices)
-
-            write_obj(vertices, model.smpl.faces, args.out_folder + "/unposed.obj")
+            write_obj(vertices, model.smpl.faces, args.out_folder + "/unposed_mv.obj")
 
 
 if __name__ == "__main__":
