@@ -10,6 +10,8 @@ import argparse
 import os
 import cv2
 from tqdm import tqdm
+import smplx
+import numpy as np
 
 from prohmr.configs import get_config, prohmr_config, dataset_config
 from prohmr.models import ProHMR, SMPL
@@ -21,6 +23,7 @@ from prohmr.utils.renderer import Renderer
 
 def write_obj(vertices, faces, path):
     with open(path, 'w') as fp:
+        print(vertices.shape)
         for v in vertices:
             fp.write('v %f %f %f\n' % (v[0], v[1], v[2]))
         for f in faces + 1:
@@ -28,15 +31,19 @@ def write_obj(vertices, faces, path):
 
 
 def scale_vertices(real_height, vertices):
-    min_y = min(vertices[:1])
-    max_y = max(vertices[:1])
+    min_y = min(vertices[:,1])
+    max_y = max(vertices[:,1])
     pred_height = max_y - min_y
     scaling_factor = pred_height / real_height
 
     scaled_verts = []
     for vertex in vertices:
-        scaled_verts.append(np.array(vertex[0] * scaling_factor, vertex[1] * scaling_factor, vertex[2] * scaling_factor))
+        scaled_verts.append(
+            [vertex[0] * scaling_factor,
+            vertex[1] * scaling_factor,
+            vertex[2] * scaling_factor])
 
+    scaled_verts = np.array(scaled_verts)
     return scaled_verts
 
 
@@ -69,7 +76,6 @@ def main():
     model.eval()
 
     # Init Optimizations
-    optimize = None
     if args.run_fitting:
         fittingObject = KeypointFitting(model_cfg)
     if args.run_multiview:
@@ -111,13 +117,14 @@ def main():
                                 255 * regression_img[:, :, ::-1])
 
             # UnPosedSimp
-            orient = out['pred_smpl_params']['global_orient']
             betas = out['pred_smpl_params']['betas']
-            pose = out['pred_smpl_params']['body_pose']
-            pose = [0 for x in pose] # Set data to zeros
-            params = {"global_orient":orient, "betas":betas, "body_pose":pose}
-            smpl_output = self.smpl(**{k: v.float() for k,v in params}, pose2rot=False)
-            vertices = smpl_output.vertices.detach().cpu().numpy()[0]
+            betas = betas.detach().cpu().numpy()[0][0]
+            model = smplx.create('./data/smpl/SMPL_NEUTRAL.pkl', num_betas=10)
+            betas = torch(betas)
+            output = model(betas=betas, return_verts=True)
+            vertices = output.vertices.detach().cpu().numpy().squeeze()
+            # vertices = smpl_output.vertices.detach().cpu().numpy()[0]
+
 
             if args.height_in_meters is not None:
                 vertices = scale_vertices(args.height_in_meters, vertices)
@@ -145,19 +152,17 @@ def main():
                                 255 * fitting_img[:, :, ::-1])
 
             # Unposed Optimized Simp
-            orient = opt_out['smpl_params']['global_orient']
             betas = opt_out['smpl_params']['betas']
-            pose = opt_out['smpl_params']['body_pose']
-            pose = [0 for x in pose]
-            params = {"global_orient":orient, "betas":betas, "body_pose":pose}
-            smpl_output = self.smpl(**{k: v.float() for k, v in params}, pose2rot=False)
-
-            vertices = smpl_output.vertices.detach().cpu().numpy()[0]
+            betas = betas.detach().cpu().numpy()[0][0]
+            model = smplx.create('./data/smpl/SMPL_NEUTRAL.pkl', num_betas=10)
+            betas = torch(betas)
+            output = model(betas=betas, return_verts=True)
+            vertices = output.vertices.detach().cpu().numpy().squeeze()
 
             if args.height_in_meters is not None:
                 vertices = scale_vertices(args.height_in_meters, vertices)
 
-            write_obj(vertices, model.smpl.faces, args.out_folder + "/unposed_fit_kp.obj")
+            write_obj(vertices, model.smpl.faces, args.out_folder + "/unposed.obj")
 
         # Multiview fitting
         if args.run_multiview:
@@ -165,18 +170,18 @@ def main():
             simp = opt_out['smpl_output']
             write_obj(simp.vertices.detach().cpu().numpy()[0], model.smpl.faces, args.out_folder + "/posed_fit_mv.obj")
 
-            orient = opt_out['smpl_params']['global_orient']
+            # Optimized Simp
             betas = opt_out['smpl_params']['betas']
-            pose = opt_out['smpl_params']['body_pose']
-            pose = [0 for x in pose]
-            params = {"global_orient":orient, "betas":betas, "body_pose":pose}
-            smpl_output = self.smpl(**{k: v.float() for k, v in params}, pose2rot=False)
-
-            vertices = smpl_output.vertices.detach().cpu().numpy()[0]
+            betas = betas.detach().cpu().numpy()[0][0]
+            model = smplx.create('./data/smpl/SMPL_NEUTRAL.pkl', num_betas=10)
+            betas = torch(betas)
+            output = model(betas=betas, return_verts=True)
+            vertices = output.vertices.detach().cpu().numpy().squeeze()
 
             if args.height_in_meters is not None:
                 vertices = scale_vertices(args.height_in_meters, vertices)
-            write_obj(vertices, model.smpl.faces,args.out_folder + "/unposed_fit_mv.obj")
+
+            write_obj(vertices, model.smpl.faces, args.out_folder + "/unposed.obj")
 
 
 if __name__ == "__main__":
